@@ -1,0 +1,52 @@
+# Laravel
+tarea8/.env
+tarea8/.env.backup
+tarea8/.phpunit.result.cache
+tarea8/vendor/
+tarea8/node_modules/
+tarea8/public/hot
+tarea8/public/storage
+tarea8/storage/*.key
+tarea8/storage/logs/*
+tarea8/storage/framework/cache/*
+tarea8/storage/framework/sessions/*
+tarea8/storage/framework/views/*
+tarea8/storage/app/exports/*
+!tarea8/storage/app/exports/.gitkeep
+tarea8/bootstrap/cache/*
+!tarea8/bootstrap/cache/.gitkeep
+
+# Python
+python-ml/__pycache__/
+python-ml/*.py[cod]
+python-ml/*$py.class
+python-ml/*.so
+python-ml/.Python
+python-ml/venv/
+python-ml/env/
+python-ml/ENV/
+python-ml/*.pkl
+python-ml/*.pickle
+python-ml/models/
+python-ml/data/
+python-ml/*.log
+python-ml/.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test files (opcional, puedes comentar si quieres incluirlos)
+# test_system.py
+# python-ml/test_data_fetch.py
+
