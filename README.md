@@ -47,7 +47,67 @@ Tarea_8/
 
 ## Instalación
 
+### Opción A: Docker (Recomendado) 🐳
+
+La forma más fácil de ejecutar todo el sistema con persistencia completa de datos.
+
+#### Requisitos
+- Docker Desktop instalado y ejecutándose
+- Docker Compose v2.0 o superior
+
+#### Pasos
+
+```bash
+# 1. Construir y levantar todos los servicios
+docker-compose up -d --build
+
+# 2. Inicializar el sistema (migraciones y seeders)
+# Windows PowerShell:
+.\docker-init.ps1
+
+# Linux/Mac:
+chmod +x docker-init.sh
+./docker-init.sh
+```
+
+#### Servicios Disponibles
+- **Laravel (Nginx)**: http://localhost:8000
+- **Vite (HMR)**: http://localhost:5173
+- **Python ML API**: http://localhost:5000
+- **MySQL**: localhost:3306
+
+#### Servicios Automáticos (Iniciados con Docker)
+- ✅ **Queue Worker**: Procesa jobs en segundo plano (reentrenamiento funcionará)
+- ✅ **Scheduler**: Ejecuta tareas programadas
+- ✅ **Vite**: Hot reload para desarrollo frontend
+
+#### Credenciales por Defecto
+- Email: `test@example.com`
+- Password: `password`
+
+#### Persistencia de Datos
+Todos los datos se almacenan en volúmenes Docker:
+- ✅ Base de datos (MySQL) - Usuarios, items, interacciones, jobs
+- ✅ Modelos de ML entrenados - Modelos .pkl y cache
+- ✅ Storage de Laravel - Archivos, logs, exports
+- ✅ Logs y cache - Bootstrap cache, config cache
+
+**Importante**: Al ejecutar `docker-init.ps1`, se ejecutan automáticamente:
+- ✅ Migraciones de base de datos
+- ✅ Seeders (72 items + interacciones)
+- ✅ Queue worker activo
+- ✅ Vite con hot reload
+- ✅ Python ML listo para entrenar
+
+Para más información, consulta [DOCKER.md](DOCKER.md)
+
+---
+
+### Opción B: Instalación Manual
+
 ### 1. Laravel
+
+#### Si tienes Composer instalado:
 
 ```bash
 cd tarea8
@@ -56,6 +116,18 @@ npm install
 cp .env.example .env
 php artisan key:generate
 ```
+
+#### Si NO tienes Composer instalado:
+
+```powershell
+cd tarea8
+.\instalar-dependencias.ps1
+npm install
+cp .env.example .env
+php artisan key:generate
+```
+
+> **Nota:** El script `instalar-dependencias.ps1` descarga Composer automáticamente y lo usa para instalar las dependencias.
 
 ### 2. Configurar Base de Datos
 
@@ -79,8 +151,17 @@ php artisan db:seed
 
 ```bash
 cd python-ml
-python3 -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
+python -m venv venv
+
+# Windows PowerShell:
+venv\Scripts\Activate.ps1
+
+# Windows CMD:
+# venv\Scripts\activate.bat
+
+# Linux/Mac:
+# source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
@@ -88,18 +169,69 @@ pip install -r requirements.txt
 
 ### Laravel
 
+#### Opción 1: Usando Composer (Recomendado)
+
+```bash
+cd tarea8
+composer run dev
+```
+
+Este comando ejecuta automáticamente:
+- Servidor Laravel (http://localhost:8000)
+- Vite para desarrollo frontend
+- Queue worker
+- Logs en tiempo real
+
+#### Opción 2: Script PowerShell (Sin Composer)
+
+Si no tienes Composer instalado, puedes usar el script alternativo:
+
+```powershell
+cd tarea8
+.\run-dev.ps1
+```
+
+#### Opción 3: Manual (Terminales Separadas)
+
 ```bash
 # Terminal 1: Servidor Laravel
+cd tarea8
 php artisan serve
 
 # Terminal 2: Vite (desarrollo frontend)
+cd tarea8
 npm run dev
 
-# Terminal 3: Scheduler (para tareas programadas)
+# Terminal 3: Queue Worker (REQUERIDO para reentrenamiento asíncrono)
+cd tarea8
+php artisan queue:work
+
+# Terminal 4: Scheduler (opcional, para tareas programadas)
+cd tarea8
 php artisan schedule:work
 ```
 
+> **Nota:** Si `composer` no está disponible, consulta `tarea8/INSTALAR_COMPOSER.md` para instrucciones de instalación.
+
 ### Python/ML
+
+#### Windows PowerShell:
+
+```powershell
+cd python-ml
+venv\Scripts\Activate.ps1
+python app.py
+```
+
+#### Windows CMD:
+
+```cmd
+cd python-ml
+venv\Scripts\activate.bat
+python app.py
+```
+
+#### Linux/Mac:
 
 ```bash
 cd python-ml
@@ -108,6 +240,11 @@ python app.py
 ```
 
 El servicio estará disponible en `http://localhost:5000`
+
+> **Nota:** Si obtienes un error de política de ejecución en PowerShell, ejecuta:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
 
 ## Uso
 

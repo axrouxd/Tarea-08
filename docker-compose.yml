@@ -1,0 +1,182 @@
+version: '3.8'
+
+services:
+  # Base de datos MySQL
+  mysql:
+    image: mysql:8.0
+    container_name: recommendation_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: recommendation_db
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD: laravel_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - recommendation_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Servicio Python/ML
+  python-ml:
+    build:
+      context: ./python-ml
+      dockerfile: Dockerfile
+    container_name: recommendation_python_ml
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - LARAVEL_API_URL=http://nginx:80
+    volumes:
+      - python_models:/app/models
+      - python_data:/app/data
+    networks:
+      - recommendation_network
+    depends_on:
+      - mysql
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Servicio Laravel (PHP-FPM)
+  laravel:
+    build:
+      context: ./tarea8
+      dockerfile: Dockerfile
+    container_name: recommendation_laravel
+    restart: unless-stopped
+    volumes:
+      - ./tarea8:/var/www/html
+      - laravel_storage:/var/www/html/storage
+      - laravel_bootstrap:/var/www/html/bootstrap/cache
+    networks:
+      - recommendation_network
+    depends_on:
+      - mysql
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=recommendation_db
+      - DB_USERNAME=laravel
+      - DB_PASSWORD=laravel_password
+      - PYTHON_ML_API_URL=http://python-ml:5000
+      - QUEUE_CONNECTION=database
+
+  # Nginx para servir Laravel
+  nginx:
+    image: nginx:alpine
+    container_name: recommendation_nginx
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./tarea8:/var/www/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - laravel_storage:/var/www/html/storage
+    networks:
+      - recommendation_network
+    depends_on:
+      - laravel
+
+  # Queue Worker de Laravel
+  queue:
+    build:
+      context: ./tarea8
+      dockerfile: Dockerfile
+    container_name: recommendation_queue
+    restart: unless-stopped
+    command: php artisan queue:work --tries=3 --timeout=300
+    volumes:
+      - ./tarea8:/var/www/html
+      - laravel_storage:/var/www/html/storage
+      - laravel_bootstrap:/var/www/html/bootstrap/cache
+    networks:
+      - recommendation_network
+    depends_on:
+      - mysql
+      - laravel
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=recommendation_db
+      - DB_USERNAME=laravel
+      - DB_PASSWORD=laravel_password
+      - PYTHON_ML_API_URL=http://python-ml:5000
+      - QUEUE_CONNECTION=database
+
+  # Scheduler de Laravel
+  scheduler:
+    build:
+      context: ./tarea8
+      dockerfile: Dockerfile
+    container_name: recommendation_scheduler
+    restart: unless-stopped
+    command: php artisan schedule:work
+    volumes:
+      - ./tarea8:/var/www/html
+      - laravel_storage:/var/www/html/storage
+      - laravel_bootstrap:/var/www/html/bootstrap/cache
+    networks:
+      - recommendation_network
+    depends_on:
+      - mysql
+      - laravel
+    environment:
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=recommendation_db
+      - DB_USERNAME=laravel
+      - DB_PASSWORD=laravel_password
+      - PYTHON_ML_API_URL=http://python-ml:5000
+      - QUEUE_CONNECTION=database
+
+  # Vite para desarrollo frontend (Hot Module Replacement)
+  vite:
+    build:
+      context: ./tarea8
+      dockerfile: Dockerfile
+    container_name: recommendation_vite
+    restart: unless-stopped
+    command: npm run dev -- --host 0.0.0.0
+    working_dir: /var/www/html
+    volumes:
+      - ./tarea8:/var/www/html
+      - ./tarea8/node_modules:/var/www/html/node_modules
+    ports:
+      - "5173:5173"
+    networks:
+      - recommendation_network
+    depends_on:
+      - laravel
+    environment:
+      - NODE_ENV=development
+      - VITE_APP_NAME="Laravel Recommendation System"
+
+volumes:
+  mysql_data:
+    driver: local
+  python_models:
+    driver: local
+  python_data:
+    driver: local
+  laravel_storage:
+    driver: local
+  laravel_bootstrap:
+    driver: local
+
+networks:
+  recommendation_network:
+    driver: bridge
+

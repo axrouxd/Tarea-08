@@ -40,10 +40,22 @@ class InteractionController extends Controller
             ]
         );
 
-        return response()->json([
-            'message' => 'Interacción registrada exitosamente',
-            'interaction' => $interaction,
-        ]);
+        // Si es una petición de Inertia, devolver back() (redirección sin recargar)
+        // Con preserveState: true en el frontend, esto no recargará la página
+        if ($request->header('X-Inertia')) {
+            return back();
+        }
+
+        // Para peticiones AJAX normales (no Inertia), devolver JSON
+        if ($request->wantsJson()) {
+            return response()->json([
+                'message' => 'Interacción registrada exitosamente',
+                'interaction' => $interaction,
+            ]);
+        }
+
+        // Redireccionar de vuelta a la página de items
+        return redirect()->route('items.index')->with('success', 'Interacción registrada exitosamente');
     }
 
     public function export()

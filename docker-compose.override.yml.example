@@ -1,0 +1,22 @@
+# Este archivo permite personalizar la configuración sin modificar docker-compose.yml
+# Copia este archivo a docker-compose.override.yml y ajusta según necesites
+
+version: '3.8'
+
+services:
+  laravel:
+    environment:
+      - APP_DEBUG=true
+      - APP_ENV=local
+    volumes:
+      - ./tarea8:/var/www/html
+      # Descomenta para desarrollo con hot reload
+      # - ./tarea8/node_modules:/var/www/html/node_modules
+
+  python-ml:
+    environment:
+      - FLASK_DEBUG=1
+    volumes:
+      # Descomenta para desarrollo con hot reload
+      # - ./python-ml:/app
+

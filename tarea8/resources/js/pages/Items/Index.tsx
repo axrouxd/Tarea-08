@@ -38,67 +38,35 @@ export default function ItemsIndex({ items }: Props) {
     );
     const [loading, setLoading] = useState<Record<number, boolean>>({});
 
-    const getCsrfToken = (): string => {
-        // Obtener el token CSRF del meta tag o cookie
-        const metaTag = document.querySelector('meta[name="csrf-token"]');
-        if (metaTag) {
-            return metaTag.getAttribute('content') || '';
-        }
-        
-        // Si no hay meta tag, intentar obtenerlo del cookie
-        const cookies = document.cookie.split(';');
-        for (const cookie of cookies) {
-            const [name, value] = cookie.trim().split('=');
-            if (name === 'XSRF-TOKEN') {
-                return decodeURIComponent(value);
-            }
-        }
-        
-        return '';
-    };
-
-    const handleRating = async (itemId: number, rating: number) => {
+    const handleRating = (itemId: number, rating: number) => {
         setRatings(prev => ({ ...prev, [itemId]: rating }));
         setLoading(prev => ({ ...prev, [itemId]: true }));
 
-        try {
-            const csrfToken = getCsrfToken();
-            
-            const response = await fetch('/interactions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': csrfToken,
-                },
-                credentials: 'same-origin', // Incluir cookies
-                body: JSON.stringify({
-                    item_id: itemId,
-                    rating: rating,
-                    interaction_type: 'rating',
-                }),
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || 'Error al guardar interacción');
-            }
-
-            const data = await response.json();
-            // La interacción se guardó exitosamente
-            console.log('Interacción guardada:', data);
-        } catch (error) {
-            console.error('Error al guardar interacción:', error);
-            // Revertir el rating si falla
-            setRatings(prev => {
-                const newRatings = { ...prev };
-                delete newRatings[itemId];
-                return newRatings;
-            });
-        } finally {
-            setLoading(prev => ({ ...prev, [itemId]: false }));
-        }
+        // Usar router.post de Inertia que maneja automáticamente el CSRF token
+        router.post('/interactions', {
+            item_id: itemId,
+            rating: rating,
+            interaction_type: 'rating',
+        }, {
+            preserveScroll: true,
+            preserveState: true,
+            only: [], // No recargar props, solo enviar la petición
+            onSuccess: () => {
+                console.log('Interacción guardada exitosamente');
+            },
+            onError: (errors) => {
+                console.error('Error al guardar interacción:', errors);
+                // Revertir el rating si falla
+                setRatings(prev => {
+                    const newRatings = { ...prev };
+                    delete newRatings[itemId];
+                    return newRatings;
+                });
+            },
+            onFinish: () => {
+                setLoading(prev => ({ ...prev, [itemId]: false }));
+            },
+        });
     };
 
     const renderStars = (itemId: number) => {

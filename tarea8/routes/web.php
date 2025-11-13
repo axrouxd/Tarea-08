@@ -30,4 +30,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
 Route::get('api/interactions/export', [InteractionController::class, 'export'])->name('api.interactions.export');
 Route::get('api/interactions/export-json', [InteractionController::class, 'exportJson'])->name('api.interactions.export-json');
 
+// Rutas de API para estadísticas y salud del servicio ML (accesibles públicamente para monitoreo)
+Route::get('api/recommendations/stats', [RecommendationController::class, 'getStats'])->name('api.recommendations.stats');
+Route::get('api/recommendations/health', [RecommendationController::class, 'health'])->name('api.recommendations.health');
+
 require __DIR__.'/settings.php';

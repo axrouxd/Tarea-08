@@ -7,47 +7,76 @@ import numpy as np
 from sklearn.decomposition import NMF
 import requests
 from datetime import datetime
+from functools import lru_cache
+import time
 
 app = Flask(__name__)
 CORS(app)
 
 # Configuración
 MODEL_PATH = 'models/recommendation_model.pkl'
+CACHE_PATH = 'models/predictions_cache.pkl'
 LARAVEL_API_URL = os.getenv('LARAVEL_API_URL', 'http://localhost:8000')
 DATA_DIR = 'data'
+
+# Cache en memoria para evitar lecturas repetidas de disco
+_model_cache = None
+_model_cache_time = None
+MODEL_CACHE_TTL = 3600  # 1 hora
 
 # Crear directorios si no existen
 os.makedirs('models', exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_model():
-    """Carga el modelo entrenado desde disco"""
+    """Carga el modelo desde caché en memoria o disco"""
+    global _model_cache, _model_cache_time
+    
+    # Verificar si tenemos caché válido en memoria
+    if _model_cache is not None and _model_cache_time is not None:
+        if time.time() - _model_cache_time < MODEL_CACHE_TTL:
+            return _model_cache
+    
+    # Cargar desde disco
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, 'rb') as f:
-            return pickle.load(f)
+            _model_cache = pickle.load(f)
+            _model_cache_time = time.time()
+            return _model_cache
     return None
 
 def save_model(model):
-    """Guarda el modelo entrenado en disco"""
+    """Guarda el modelo y actualiza caché"""
+    global _model_cache, _model_cache_time
+    
     with open(MODEL_PATH, 'wb') as f:
         pickle.dump(model, f)
+    
+    # Actualizar caché en memoria
+    _model_cache = model
+    _model_cache_time = time.time()
 
-def fetch_interactions_from_laravel():
-    """Obtiene las interacciones desde la API de Laravel"""
+def fetch_interactions_from_laravel(batch_size=1000, max_batches=10):
+    """
+    Obtiene interacciones desde Laravel con paginación para evitar sobrecarga
+    
+    Args:
+        batch_size: Tamaño de cada lote
+        max_batches: Número máximo de lotes a procesar
+    """
     url = f"{LARAVEL_API_URL}/api/interactions/export-json"
     print(f"Conectando a {url}...")
     
     try:
-        # Usar timeout separado para conexión y lectura
-        # (connect, read) = (5 segundos para conectar, 30 segundos para leer)
+        # Aumentar timeout y agregar parámetros de paginación si es posible
         response = requests.get(
             url,
-            timeout=(5, 30),  # Timeout de conexión: 5s, timeout de lectura: 30s
+            timeout=(10, 60),  # Más tiempo para conexiones lentas
             headers={
                 'Accept': 'application/json',
                 'User-Agent': 'Python-ML-Service/1.0'
             },
-            stream=False  # No usar streaming para evitar problemas
+            stream=False
         )
         
         print(f"✓ Respuesta recibida: Status {response.status_code}")
@@ -55,37 +84,44 @@ def fetch_interactions_from_laravel():
         if response.status_code == 200:
             try:
                 data = response.json()
-                print(f"✓ Datos obtenidos exitosamente: {len(data)} interacciones")
+                total = len(data)
+                
+                # Limitar cantidad de datos procesados
+                max_interactions = batch_size * max_batches
+                if total > max_interactions:
+                    print(f"⚠ Limitando de {total} a {max_interactions} interacciones")
+                    # Tomar las más recientes si hay timestamp
+                    if data and 'created_at' in data[0]:
+                        data = sorted(data, key=lambda x: x.get('created_at', ''), reverse=True)
+                    data = data[:max_interactions]
+                
+                print(f"✓ Datos obtenidos: {len(data)} interacciones")
                 return data
             except ValueError as e:
                 print(f"✗ Error al parsear JSON: {str(e)}")
-                print(f"  Respuesta (primeros 200 chars): {response.text[:200]}")
                 return []
         else:
             print(f"✗ Error HTTP {response.status_code}")
-            print(f"  Respuesta: {response.text[:200]}")
             return []
             
     except requests.exceptions.Timeout as e:
         print(f"✗ Timeout: {str(e)}")
-        print(f"  Laravel no respondió a tiempo. Verifica que esté corriendo.")
         return []
     except requests.exceptions.ConnectionError as e:
         print(f"✗ Error de conexión: {str(e)}")
-        print(f"  No se pudo conectar con Laravel en {LARAVEL_API_URL}")
-        print(f"  Asegúrate de que Laravel esté corriendo: php artisan serve")
-        return []
-    except requests.exceptions.RequestException as e:
-        print(f"✗ Error en la petición: {str(e)}")
         return []
     except Exception as e:
         print(f"✗ Error inesperado: {type(e).__name__}: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
         return []
 
-def train_model(interactions_data):
-    """Entrena el modelo de recomendación con los datos proporcionados"""
+def train_model(interactions_data, max_components=10, max_iter=30):
+    """
+    Entrena modelo optimizado para laptops con recursos limitados
+    
+    Args:
+        max_components: Número máximo de componentes latentes (reducido a 10)
+        max_iter: Iteraciones máximas (reducido a 30)
+    """
     if not interactions_data or len(interactions_data) == 0:
         raise ValueError("No hay datos de interacciones para entrenar")
     
@@ -94,18 +130,18 @@ def train_model(interactions_data):
     # Convertir a DataFrame
     df = pd.DataFrame(interactions_data)
     
-    # Asegurar que tenemos las columnas necesarias
+    # Validar columnas
     required_columns = ['user_id', 'item_id', 'rating']
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"Faltan columnas requeridas: {required_columns}")
     
-    # Limitar el tamaño de datos si es muy grande (para evitar cuelgues)
-    MAX_INTERACTIONS = 10000
+    # Limitar tamaño para laptops (reducido a 5000)
+    MAX_INTERACTIONS = 5000
     if len(df) > MAX_INTERACTIONS:
-        print(f"Advertencia: Limitando a {MAX_INTERACTIONS} interacciones para optimizar rendimiento")
+        print(f"⚠ Limitando a {MAX_INTERACTIONS} interacciones para optimizar")
         df = df.sample(n=MAX_INTERACTIONS, random_state=42).reset_index(drop=True)
     
-    # Crear matriz usuario-item usando pivot (más eficiente)
+    # Matriz usuario-item
     print("Construyendo matriz usuario-item...")
     R = df.pivot_table(
         index='user_id',
@@ -115,231 +151,276 @@ def train_model(interactions_data):
         aggfunc='mean'
     )
     
-    # Obtener IDs únicos
+    # IDs y mapeos
     user_ids = R.index.values
     item_ids = R.columns.values
     
-    # Crear mapeos
     user_to_idx = {user_id: idx for idx, user_id in enumerate(user_ids)}
     item_to_idx = {item_id: idx for idx, item_id in enumerate(item_ids)}
     idx_to_user = {idx: user_id for user_id, idx in user_to_idx.items()}
     idx_to_item = {idx: item_id for item_id, idx in item_to_idx.items()}
     
-    # Convertir a numpy array y usar float32 para ahorrar memoria
+    # Convertir a float32 para ahorrar memoria
     R_array = R.values.astype(np.float32)
     n_users, n_items = R_array.shape
     
     print(f"Matriz: {n_users} usuarios x {n_items} items")
     
-    # Normalizar ratings a escala 0-1 para NMF
-    R_normalized = (R_array - 1) / 4.0  # Escalar de [1,5] a [0,1]
-    R_normalized = np.clip(R_normalized, 0, 1)  # Asegurar rango válido
+    # Normalizar a [0,1]
+    R_normalized = (R_array - 1) / 4.0
+    R_normalized = np.clip(R_normalized, 0, 1)
     
-    # Calcular número de componentes (reducido para optimizar)
-    # Usar máximo 15 componentes en lugar de 50
-    max_components = min(15, min(n_users, n_items) - 1)
-    if max_components < 1:
-        max_components = 1
+    # Componentes reducidos para laptops
+    n_components = min(max_components, min(n_users, n_items) - 1)
+    if n_components < 1:
+        n_components = 1
     
-    print(f"Entrenando modelo NMF con {max_components} componentes...")
+    print(f"Entrenando NMF con {n_components} componentes, {max_iter} iteraciones...")
     
-    # Entrenar modelo NMF con menos iteraciones y componentes
+    # Modelo NMF optimizado
     model = NMF(
-        n_components=max_components,
+        n_components=n_components,
         random_state=42,
-        max_iter=50,  # Reducido de 200 a 50
-        alpha_W=0.01,  # Regularización para W (usuarios)
-        alpha_H=0.01,  # Regularización para H (items)
-        solver='cd',  # Coordinate descent es más rápido
+        max_iter=max_iter,  # Reducido
+        alpha_W=0.02,  # Más regularización
+        alpha_H=0.02,
+        solver='cd',  # Más rápido
         beta_loss='frobenius',
-        init='random',
+        init='nndsvd',  # Mejor inicialización
         verbose=0
     )
     
-    W = model.fit_transform(R_normalized)  # Matriz de usuarios
-    H = model.components_  # Matriz de items
+    W = model.fit_transform(R_normalized)
+    H = model.components_
     
-    # Convertir a float32 para ahorrar memoria
+    # Float32 para ahorrar memoria
     W = W.astype(np.float32)
     H = H.astype(np.float32)
     
-    # Guardar información adicional necesaria para predicciones
-    # NO guardar R_original para ahorrar memoria
+    # Pre-calcular predicciones para caché
+    print("Pre-calculando predicciones para caché...")
+    R_pred = np.dot(W, H)
+    R_pred = (R_pred * 4.0) + 1  # Escalar a [1,5]
+    R_pred = np.clip(R_pred, 1, 5)
+    
+    # Guardar items vistos por usuario para filtrado rápido
+    user_seen_items = {}
+    for user_id in user_ids:
+        user_items = df[df['user_id'] == user_id]['item_id'].tolist()
+        user_seen_items[int(user_id)] = set(int(i) for i in user_items)
+    
     model_info = {
-        'model': model,
         'W': W,
         'H': H,
+        'predictions': R_pred.astype(np.float32),  # Caché de predicciones
         'user_to_idx': user_to_idx,
         'item_to_idx': item_to_idx,
         'idx_to_user': idx_to_user,
         'idx_to_item': idx_to_item,
-        'user_ids': [int(uid) for uid in (user_ids.tolist() if hasattr(user_ids, 'tolist') else list(user_ids))],
-        'item_ids': [int(iid) for iid in (item_ids.tolist() if hasattr(item_ids, 'tolist') else list(item_ids))],
+        'user_ids': [int(uid) for uid in user_ids],
+        'item_ids': [int(iid) for iid in item_ids],
+        'user_seen_items': user_seen_items,  # Caché de items vistos
+        'metadata': {
+            'n_components': n_components,
+            'n_users': n_users,
+            'n_items': n_items,
+            'trained_at': datetime.now().isoformat()
+        }
     }
     
-    # Calcular error de reconstrucción (opcional, para logging)
-    R_pred = np.dot(W, H)
-    mse = np.mean((R_normalized - R_pred) ** 2)
-    print(f"Modelo entrenado - MSE: {mse:.4f}, Componentes: {max_components}, Usuarios: {n_users}, Items: {n_items}")
+    # MSE para logging
+    mse = np.mean((R_normalized - (R_pred - 1) / 4.0) ** 2)
+    print(f"✓ Modelo entrenado - MSE: {mse:.4f}, Componentes: {n_components}")
     
     # Limpiar memoria
-    del R_array, R_normalized, R_pred, R
+    del R_array, R_normalized, R, R_pred
     
     return model_info
 
 @app.route('/recommend', methods=['GET', 'POST'])
 def recommend():
-    """Endpoint para obtener recomendaciones para un usuario"""
+    """Endpoint optimizado para obtener recomendaciones"""
     try:
-        # Obtener user_id de la petición
+        # Obtener user_id
         if request.method == 'GET':
             user_id = request.args.get('user_id', type=int)
+            top_n = request.args.get('top_n', default=5, type=int)
         else:
             data = request.get_json()
             user_id = data.get('user_id')
+            top_n = data.get('top_n', 5)
         
         if user_id is None:
             return jsonify({'error': 'user_id es requerido'}), 400
         
-        # Cargar modelo
+        top_n = min(top_n, 20)  # Máximo 20 recomendaciones
+        
+        # Cargar modelo (usa caché en memoria)
         model_info = load_model()
         if model_info is None:
             return jsonify({
-                'error': 'Modelo no entrenado. Por favor, ejecute /retrain primero.'
+                'error': 'Modelo no entrenado. Ejecute /retrain primero.'
             }), 404
         
-        # Verificar si el usuario está en el modelo
+        # Verificar usuario
         if user_id not in model_info['user_to_idx']:
             return jsonify({
-                'error': f'Usuario {user_id} no encontrado en el modelo'
+                'error': f'Usuario {user_id} no encontrado en el modelo',
+                'available_users': model_info['user_ids'][:10]  # Primeros 10
             }), 404
         
-        # Obtener todas las interacciones para saber qué items ya ha visto el usuario
-        interactions = fetch_interactions_from_laravel()
-        user_interactions = [i for i in interactions if i.get('user_id') == user_id]
-        seen_items = set([i['item_id'] for i in user_interactions])
-        
-        # Obtener índice del usuario en el modelo
+        # Obtener índice del usuario
         user_idx = model_info['user_to_idx'][user_id]
         
-        # Obtener vector de características del usuario (W[user_idx])
-        user_vector = model_info['W'][user_idx]
+        # Usar predicciones pre-calculadas (MUCHO más rápido)
+        user_predictions = model_info['predictions'][user_idx]
         
-        # Predecir ratings para todos los items: R_pred = W * H
-        # Para este usuario: ratings_pred = user_vector * H
-        ratings_pred = np.dot(user_vector, model_info['H'])
+        # Obtener items ya vistos desde caché
+        seen_items = model_info['user_seen_items'].get(user_id, set())
         
-        # Convertir de vuelta a escala 1-5
-        ratings_pred = (ratings_pred * 4.0) + 1
-        ratings_pred = np.clip(ratings_pred, 1, 5)  # Asegurar que esté en rango [1,5]
-        
-        # Crear lista de predicciones (item_id, rating)
+        # Crear lista de predicciones (solo items no vistos)
         predictions = []
         for item_idx, item_id in model_info['idx_to_item'].items():
-            if item_id not in seen_items:  # Solo items no vistos
-                # Convertir a tipos nativos de Python para JSON
-                item_id_int = int(item_id) if hasattr(item_id, '__int__') else item_id
-                rating_float = float(ratings_pred[item_idx])
-                predictions.append((item_id_int, rating_float))
+            if item_id not in seen_items:
+                predictions.append((int(item_id), float(user_predictions[item_idx])))
         
         if len(predictions) == 0:
             return jsonify({
                 'message': 'No hay items nuevos para recomendar',
-                'item_ids': []
+                'user_id': int(user_id),
+                'item_ids': [],
+                'seen_items_count': len(seen_items)
             })
         
-        # Ordenar por rating predicho (mayor a menor) y tomar los top 5
+        # Ordenar y tomar top N
         predictions.sort(key=lambda x: x[1], reverse=True)
-        top_items = [int(item_id) for item_id, rating in predictions[:5]]
+        top_items = predictions[:top_n]
         
         return jsonify({
             'user_id': int(user_id),
-            'item_ids': top_items,
-            'predictions': {str(int(item_id)): float(rating) for item_id, rating in predictions[:5]}
+            'item_ids': [item_id for item_id, _ in top_items],
+            'predictions': {str(item_id): rating for item_id, rating in top_items},
+            'total_available': len(predictions),
+            'seen_items_count': len(seen_items)
         })
     
     except Exception as e:
+        import traceback
+        print(f"Error en /recommend: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/retrain', methods=['POST'])
 def retrain():
-    """Endpoint para reentrenar el modelo con datos frescos"""
+    """Endpoint optimizado para reentrenar el modelo"""
     try:
-        print(f"[{datetime.now()}] Iniciando reentrenamiento del modelo...")
+        print(f"[{datetime.now()}] Iniciando reentrenamiento...")
         
-        # Obtener datos de Laravel
-        print("Obteniendo datos de interacciones desde Laravel...")
-        interactions_data = fetch_interactions_from_laravel()
+        # Parámetros opcionales
+        data = request.get_json() or {}
+        max_components = data.get('max_components', 10)
+        max_iter = data.get('max_iter', 30)
         
-        if not interactions_data or len(interactions_data) == 0:
+        # Obtener datos con límites
+        print("Obteniendo datos desde Laravel...")
+        interactions_data = fetch_interactions_from_laravel(
+            batch_size=1000,
+            max_batches=5  # Máximo 5000 interacciones
+        )
+        
+        if not interactions_data:
             return jsonify({
-                'error': 'No hay datos de interacciones disponibles',
-                'message': 'Asegúrese de que haya interacciones registradas en Laravel'
+                'error': 'No hay datos disponibles',
+                'message': 'Verifique que Laravel esté corriendo y tenga interacciones'
             }), 400
         
-        original_count = len(interactions_data)
-        print(f"Se obtuvieron {original_count} interacciones")
+        print(f"Entrenando con {len(interactions_data)} interacciones...")
         
-        # Entrenar modelo
-        print("Entrenando modelo...")
-        model = train_model(interactions_data)
+        # Entrenar modelo optimizado
+        model = train_model(
+            interactions_data,
+            max_components=max_components,
+            max_iter=max_iter
+        )
         
         # Guardar modelo
-        print("Guardando modelo...")
         save_model(model)
         
-        print(f"[{datetime.now()}] Reentrenamiento completado exitosamente")
+        print(f"[{datetime.now()}] ✓ Reentrenamiento completado")
         
         return jsonify({
             'message': 'Modelo reentrenado exitosamente',
-            'interactions_count': original_count,
-            'model_path': MODEL_PATH,
+            'interactions_count': len(interactions_data),
+            'model_metadata': model['metadata'],
             'timestamp': datetime.now().isoformat()
         })
     
-    except MemoryError:
-        error_msg = "Error de memoria: Demasiados datos. Intente con menos interacciones."
-        print(f"Error durante el reentrenamiento: {error_msg}")
-        return jsonify({
-            'error': 'Error al reentrenar el modelo',
-            'details': error_msg
-        }), 500
     except Exception as e:
-        error_msg = str(e)
-        print(f"Error durante el reentrenamiento: {error_msg}")
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error en /retrain: {error_trace}")
         return jsonify({
-            'error': 'Error al reentrenar el modelo',
-            'details': error_msg
+            'error': 'Error al reentrenar',
+            'details': str(e)
         }), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Endpoint de salud para verificar que el servicio está funcionando"""
+    """Endpoint de salud con información del modelo"""
     model_exists = os.path.exists(MODEL_PATH)
-    return jsonify({
+    model_info = load_model() if model_exists else None
+    
+    health_data = {
         'status': 'healthy',
         'model_loaded': model_exists,
         'timestamp': datetime.now().isoformat()
+    }
+    
+    if model_info and 'metadata' in model_info:
+        health_data['model_metadata'] = model_info['metadata']
+    
+    return jsonify(health_data)
+
+@app.route('/stats', methods=['GET'])
+def stats():
+    """Endpoint para ver estadísticas del modelo"""
+    model_info = load_model()
+    if not model_info:
+        return jsonify({'error': 'Modelo no cargado'}), 404
+    
+    return jsonify({
+        'users': len(model_info['user_ids']),
+        'items': len(model_info['item_ids']),
+        'metadata': model_info.get('metadata', {}),
+        'cache_status': 'active' if _model_cache else 'inactive'
     })
 
 @app.route('/', methods=['GET'])
 def index():
     """Endpoint raíz con información del servicio"""
     return jsonify({
-        'service': 'ML Recommendation Service',
-        'version': '1.0.0',
+        'service': 'ML Recommendation Service (Optimizado)',
+        'version': '2.0.0',
         'endpoints': {
-            '/recommend': 'GET/POST - Obtener recomendaciones para un usuario',
-            '/retrain': 'POST - Reentrenar el modelo',
-            '/health': 'GET - Estado del servicio'
-        }
+            '/recommend': 'GET/POST - Obtener recomendaciones (user_id, top_n)',
+            '/retrain': 'POST - Reentrenar modelo (max_components, max_iter)',
+            '/health': 'GET - Estado del servicio',
+            '/stats': 'GET - Estadísticas del modelo'
+        },
+        'optimizations': [
+            'Caché de predicciones pre-calculadas',
+            'Caché de modelo en memoria',
+            'Items vistos cacheados',
+            'Componentes reducidos (10)',
+            'Iteraciones reducidas (30)',
+            'Límite de 5000 interacciones'
+        ]
     })
 
 if __name__ == '__main__':
-    # Si no existe un modelo, intentar entrenar uno inicial
     if not os.path.exists(MODEL_PATH):
-        print("No se encontró modelo existente. Ejecute /retrain para entrenar uno inicial.")
+        print("⚠ No hay modelo. Ejecute POST /retrain para crear uno.")
+    else:
+        print("✓ Modelo encontrado. Listo para recomendar.")
     
-    # Desactivar debug en producción para mejor rendimiento
+    # Producción optimizada
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
-

@@ -4,7 +4,8 @@ import { Head, router } from '@inertiajs/react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useState } from 'react';
+import { CheckCircle2, XCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 const breadcrumbs: BreadcrumbItem[] = [
     {
@@ -27,9 +28,39 @@ interface Props {
 
 export default function RecommendationsIndex({ recommendations, error }: Props) {
     const [retraining, setRetraining] = useState(false);
+    const [successMessage, setSuccessMessage] = useState<string | null>(null);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+
+    // Auto-ocultar mensajes después de 5 segundos
+    useEffect(() => {
+        if (successMessage) {
+            const timer = setTimeout(() => setSuccessMessage(null), 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [successMessage]);
+
+    useEffect(() => {
+        if (errorMessage) {
+            const timer = setTimeout(() => setErrorMessage(null), 5000);
+            return () => clearTimeout(timer);
+        }
+    }, [errorMessage]);
+
+    // Limpiar intervalo al desmontar el componente
+    useEffect(() => {
+        return () => {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+            }
+        };
+    }, [pollingInterval]);
 
     const handleRetrain = async () => {
         setRetraining(true);
+        setSuccessMessage(null);
+        setErrorMessage(null);
+        
         try {
             const response = await fetch('/recommendations/retrain', {
                 method: 'POST',
@@ -44,18 +75,77 @@ export default function RecommendationsIndex({ recommendations, error }: Props) 
 
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || 'Error al reentrenar el modelo');
+                throw new Error(errorData.message || errorData.error || 'Error al iniciar el reentrenamiento');
             }
 
             const data = await response.json();
-            console.log('Modelo reentrenado:', data);
+            console.log('Reentrenamiento iniciado:', data);
             
-            // Recargar la página para mostrar las nuevas recomendaciones
-            router.reload();
+            // Mostrar mensaje de éxito
+            setSuccessMessage('Reentrenamiento iniciado. Esperando a que termine...');
+            
+            // El reentrenamiento tarda aproximadamente 3-5 segundos según los logs
+            // Esperamos un tiempo razonable y luego recargamos las recomendaciones
+            // Hacemos polling cada 2 segundos para verificar si el modelo se actualizó
+            let attempts = 0;
+            const maxAttempts = 20; // Máximo 40 segundos (20 intentos × 2 segundos)
+            let lastTrainedAt: string | null = null;
+            
+            // Primero obtenemos el timestamp actual del modelo para comparar
+            try {
+                const initialStatsResponse = await fetch('/api/recommendations/stats');
+                if (initialStatsResponse.ok) {
+                    const initialStats = await initialStatsResponse.json();
+                    lastTrainedAt = initialStats.data?.model_metadata?.trained_at || null;
+                }
+            } catch (e) {
+                console.error('Error al obtener estado inicial:', e);
+            }
+            
+            const checkJobStatus = setInterval(async () => {
+                attempts++;
+                
+                try {
+                    const statsResponse = await fetch('/api/recommendations/stats');
+                    if (statsResponse.ok) {
+                        const stats = await statsResponse.json();
+                        const currentTrainedAt = stats.data?.model_metadata?.trained_at;
+                        
+                        // Si el timestamp cambió, significa que el modelo se reentrenó
+                        if (currentTrainedAt && currentTrainedAt !== lastTrainedAt) {
+                            clearInterval(checkJobStatus);
+                            setPollingInterval(null);
+                            setSuccessMessage('Reentrenamiento completado. Recargando recomendaciones...');
+                            // Recargar las recomendaciones después de un breve delay
+                            setTimeout(() => {
+                                router.reload({ only: ['recommendations', 'error'] });
+                            }, 1000);
+                            setRetraining(false);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.error('Error al verificar estado:', e);
+                }
+                
+                // Si excedemos los intentos, recargar de todas formas
+                if (attempts >= maxAttempts) {
+                    clearInterval(checkJobStatus);
+                    setPollingInterval(null);
+                    setSuccessMessage('Reentrenamiento completado. Recargando recomendaciones...');
+                    setTimeout(() => {
+                        router.reload({ only: ['recommendations', 'error'] });
+                    }, 1000);
+                    setRetraining(false);
+                }
+            }, 2000); // Verificar cada 2 segundos
+            
+            // Guardar la referencia del intervalo para poder limpiarlo
+            setPollingInterval(checkJobStatus);
+            
         } catch (error) {
             console.error('Error al reentrenar:', error);
-            alert(error instanceof Error ? error.message : 'Error al reentrenar el modelo');
-        } finally {
+            setErrorMessage(error instanceof Error ? error.message : 'Error al iniciar el reentrenamiento');
             setRetraining(false);
         }
     };
@@ -91,6 +181,22 @@ export default function RecommendationsIndex({ recommendations, error }: Props) 
                 {error && (
                     <Alert variant="destructive">
                         <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                )}
+
+                {successMessage && (
+                    <Alert className="bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800">
+                        <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+                        <AlertDescription className="text-green-800 dark:text-green-200">
+                            {successMessage}
+                        </AlertDescription>
+                    </Alert>
+                )}
+
+                {errorMessage && (
+                    <Alert variant="destructive">
+                        <XCircle className="h-4 w-4" />
+                        <AlertDescription>{errorMessage}</AlertDescription>
                     </Alert>
                 )}
 

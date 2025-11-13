@@ -1,6 +1,7 @@
 # Laravel
 tarea8/.env
 tarea8/.env.backup
+!tarea8/.env.docker.example
 tarea8/.phpunit.result.cache
 tarea8/vendor/
 tarea8/node_modules/
@@ -15,6 +16,10 @@ tarea8/storage/app/exports/*
 !tarea8/storage/app/exports/.gitkeep
 tarea8/bootstrap/cache/*
 !tarea8/bootstrap/cache/.gitkeep
+tarea8/composer.phar
+tarea8/tarea8/
+tarea8/database/*.sqlite
+tarea8/database/*.sqlite-journal
 
 # Python
 python-ml/__pycache__/
