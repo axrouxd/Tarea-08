@@ -62,18 +62,29 @@ export default function RecommendationsIndex({ recommendations, error }: Props) 
         setErrorMessage(null);
         
         try {
+            // Obtener el token CSRF del meta tag
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+            
+            if (!csrfToken) {
+                throw new Error('No se pudo obtener el token CSRF. Por favor, recarga la página.');
+            }
+
             const response = await fetch('/recommendations/retrain', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json',
-                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '',
+                    'X-CSRF-TOKEN': csrfToken,
                 },
                 credentials: 'same-origin',
             });
 
             if (!response.ok) {
+                // Si es un error 419 (CSRF token mismatch), mostrar mensaje específico
+                if (response.status === 419) {
+                    throw new Error('El token de seguridad ha expirado. Por favor, recarga la página e intenta nuevamente.');
+                }
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(errorData.message || errorData.error || 'Error al iniciar el reentrenamiento');
             }

@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
     unzip \
     nodejs \
     npm \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd zip \
+    && docker-php-ext-install pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Instalar Composer
@@ -36,8 +36,9 @@ COPY . .
 # Completar instalación de Composer
 RUN composer dump-autoload --optimize
 
-# Instalar dependencias de Node.js (no construir assets aquí, Vite lo hará en desarrollo)
-RUN npm install
+# Instalar dependencias de Node.js (opcional, se puede hacer después)
+# Si falla, se instalará cuando el contenedor esté corriendo
+RUN npm install || echo "npm install falló, se instalará después" && true
 
 # Configurar permisos
 RUN chown -R www-data:www-data /var/www/html \
